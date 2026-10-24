@@ -19,6 +19,8 @@ router.post('/imports/:id/cancel', requireAdmin, attendanceController.cancelImpo
 
 // Attendance records - members see only own, admins see all
 router.get('/', requireMember, attendanceController.getAttendance);
+router.post('/', requireAdmin, attendanceController.recordManualAttendance);
 router.patch('/:id', requireAdmin, attendanceController.correctAttendance);
+router.delete('/:id', requireAdmin, attendanceController.deleteAttendance);
 
 export default router;

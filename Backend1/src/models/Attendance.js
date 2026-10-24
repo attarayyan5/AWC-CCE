@@ -75,6 +75,11 @@ const attendanceSchema = new mongoose.Schema(
 
 // Enforce one attendance record per member per activity
 attendanceSchema.index({ memberId: 1, activityId: 1 }, { unique: true });
+// Additional indexes for fast queries and pagination
+attendanceSchema.index({ recordedAt: -1 });
+attendanceSchema.index({ status: 1, recordedAt: -1 });
+attendanceSchema.index({ memberId: 1, recordedAt: -1 });
+attendanceSchema.index({ activityId: 1, recordedAt: -1 });
 
 const Attendance = mongoose.model('Attendance', attendanceSchema);
 

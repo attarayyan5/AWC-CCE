@@ -36,8 +36,8 @@ app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 app.use(cookieParser());
 
-// ----- Rate Limiting -----
-app.use('/api', apiLimiter);
+// ----- Rate Limiting (Disabled) -----
+// app.use('/api', apiLimiter);
 
 // ----- Health Check -----
 app.get('/api/v1/health', (req, res) => {

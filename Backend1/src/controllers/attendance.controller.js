@@ -56,3 +56,21 @@ export const correctAttendance = catchAsync(async (req, res) => {
   const result = await attendanceService.correctAttendance(req.params.id, req.body, req.user.id, { ipAddress: req.ip });
   sendSuccess(res, { message: 'Attendance corrected', data: { attendance: result } });
 });
+
+export const recordManualAttendance = catchAsync(async (req, res) => {
+  const { memberId, activityId } = req.body;
+  if (!memberId) throw new AppError('Member ID is required', 400);
+  if (!activityId) throw new AppError('Activity ID is required', 400);
+
+  const result = await attendanceService.recordManualAttendance(req.body, req.user.id, { ipAddress: req.ip });
+  sendSuccess(res, {
+    statusCode: 201,
+    message: 'Member attendance recorded successfully',
+    data: { attendance: result },
+  });
+});
+
+export const deleteAttendance = catchAsync(async (req, res) => {
+  await attendanceService.deleteAttendance(req.params.id, req.user.id, { ipAddress: req.ip });
+  sendSuccess(res, { message: 'Attendance record deleted' });
+});

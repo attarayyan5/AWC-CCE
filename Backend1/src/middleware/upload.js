@@ -32,10 +32,7 @@ const ALLOWED_DOCUMENT_EXTENSIONS = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '
 // Memory storage - files not saved to disk
 const memoryStorage = multer.memoryStorage();
 
-/**
- * Attendance file upload (Excel/CSV)
- */
-export const attendanceUpload = multer({
+const attendanceMulter = multer({
   storage: memoryStorage,
   limits: {
     fileSize: 10 * 1024 * 1024, // 10MB
@@ -51,16 +48,25 @@ export const attendanceUpload = multer({
       );
     }
 
-    if (!ALLOWED_ATTENDANCE_MIMETYPES.includes(file.mimetype)) {
-      // Allow if extension is valid even if MIME type is ambiguous
-      if (!ALLOWED_ATTENDANCE_EXTENSIONS.includes(ext)) {
-        return cb(new AppError('Invalid MIME type for attendance file.', 400), false);
-      }
-    }
-
     cb(null, true);
   },
-}).single('attendanceFile');
+}).fields([
+  { name: 'attendanceFile', maxCount: 1 },
+  { name: 'file', maxCount: 1 },
+]);
+
+/**
+ * Attendance file upload (Excel/CSV) - accepts either 'attendanceFile' or 'file'
+ */
+export const attendanceUpload = (req, res, next) => {
+  attendanceMulter(req, res, (err) => {
+    if (err) return next(err);
+    if (req.files) {
+      req.file = req.files['attendanceFile']?.[0] || req.files['file']?.[0];
+    }
+    next();
+  });
+};
 
 /**
  * Document/image upload for ImageKit

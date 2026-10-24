@@ -9,7 +9,13 @@ export default function EmptyState({ icon: Icon = Inbox, title = 'No data found'
       </div>
       <h3 className="text-lg font-medium text-primary-text mb-1">{title}</h3>
       {description && <p className="text-sm text-secondary-text mb-4 max-w-sm">{description}</p>}
-      {action && <Button onClick={action}>{actionLabel}</Button>}
+      {action && (
+        typeof action === 'function' ? (
+          <Button onClick={action}>{actionLabel}</Button>
+        ) : (
+          action
+        )
+      )}
     </div>
   );
 }

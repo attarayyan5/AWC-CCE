@@ -1,16 +1,21 @@
+import { useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { useQuery } from '@tanstack/react-query';
+import { Plus } from 'lucide-react';
 import { memberService } from '../../services/member.service.js';
 import { queryKeys } from '../../utils/queryKeys.js';
 import { formatDate, formatHours, getStatusColor } from '../../utils/formatters.js';
 import PageHeader from '../../components/layout/PageHeader.jsx';
 import Card from '../../components/ui/Card.jsx';
 import Badge from '../../components/ui/Badge.jsx';
+import Button from '../../components/ui/Button.jsx';
 import ErrorState from '../../components/ui/ErrorState.jsx';
 import Spinner from '../../components/ui/Spinner.jsx';
+import RecordAttendanceModal from '../../components/attendance/RecordAttendanceModal.jsx';
 
 export default function MemberDetailPage() {
   const { id } = useParams();
+  const [isRecordModalOpen, setIsRecordModalOpen] = useState(false);
 
   const { data: report, isLoading, error, refetch } = useQuery({
     queryKey: queryKeys.members.report(id),
@@ -55,7 +60,13 @@ export default function MemberDetailPage() {
           </div>
 
           <Card padding="none">
-            <div className="px-6 py-4 border-b border-border"><h3 className="font-semibold text-primary-text">Activity History</h3></div>
+            <div className="px-6 py-4 border-b border-border flex items-center justify-between">
+              <h3 className="font-semibold text-primary-text">Activity History</h3>
+              <Button size="sm" onClick={() => setIsRecordModalOpen(true)}>
+                <Plus className="w-4 h-4 mr-1" />
+                Record Attendance
+              </Button>
+            </div>
             {history.length === 0 ? (
               <p className="text-sm text-secondary-text text-center py-8">No attendance records yet</p>
             ) : (
@@ -83,6 +94,14 @@ export default function MemberDetailPage() {
           </Card>
         </div>
       </div>
+
+      {/* Manual Attendance Modal */}
+      <RecordAttendanceModal
+        isOpen={isRecordModalOpen}
+        onClose={() => setIsRecordModalOpen(false)}
+        initialMember={m}
+        onSuccess={() => refetch()}
+      />
     </div>
   );
 }

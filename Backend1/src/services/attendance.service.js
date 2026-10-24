@@ -108,15 +108,192 @@ export const uploadAttendanceFile = async (file, activityId, columnMapping, acto
 
   const { headers, rows } = parseResult;
 
-  // Create the import record
+  // Resolve headers smartly from columnMapping or file headers
+  const resolveHeader = (headersList, candidateNames, fallback) => {
+    if (!headersList || headersList.length === 0) return fallback;
+    for (const name of candidateNames) {
+      const cleanTarget = name.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const match = headersList.find(
+        (h) => h.toLowerCase().replace(/[^a-z0-9]/g, '') === cleanTarget
+      );
+      if (match) return match;
+    }
+    return fallback;
+  };
+
+  const studentIdCol =
+    columnMapping?.studentId && headers.includes(columnMapping.studentId)
+      ? columnMapping.studentId
+      : resolveHeader(
+          headers,
+          ['studentId', 'student_id', 'student id', 'studentid', 'matric', 'matricno', 'id'],
+          headers[0] || 'studentId'
+        );
+
+  const emailCol =
+    columnMapping?.email && headers.includes(columnMapping.email)
+      ? columnMapping.email
+      : resolveHeader(
+          headers,
+          ['email', 'emailaddress', 'email address', 'mail'],
+          'email'
+        );
+
+  const fullNameCol =
+    columnMapping?.fullName && headers.includes(columnMapping.fullName)
+      ? columnMapping.fullName
+      : resolveHeader(
+          headers,
+          ['fullname', 'full name', 'name', 'studentname', 'student name'],
+          'fullName'
+        );
+
+  const finalMapping = {
+    studentId: studentIdCol,
+    email: emailCol,
+    fullName: fullNameCol,
+  };
+
+  // Create the import record in PROCESSING state
   const importRecord = await AttendanceImport.create({
     activityId,
     uploadedBy: actorUserId,
     originalFilename,
     fileChecksum,
     totalRows: rows.length,
-    status: 'UPLOADED',
-    columnMapping: columnMapping || {},
+    status: 'PROCESSING',
+    columnMapping: finalMapping,
+  });
+
+  // Pre-fetch existing attendance for deduplication against this activity
+  const existingAttendance = await Attendance.find({
+    activityId: activity._id,
+  })
+    .select('memberId')
+    .lean();
+  const existingMemberIds = new Set(existingAttendance.map((a) => a.memberId.toString()));
+
+  const seenStudentIds = new Set();
+  const rowDocs = [];
+  const results = {
+    valid: 0,
+    duplicate: 0,
+    unknownMember: 0,
+    emailMismatch: 0,
+    invalid: 0,
+    alreadyImported: 0,
+  };
+
+  // Validate and build row documents
+  for (const rowItem of rows) {
+    const row = rowItem.data || {};
+    const rawStudentId = row[studentIdCol] || row['studentId'] || row['Student ID'] || '';
+    const rawEmail = row[emailCol] || row['email'] || row['Email'] || '';
+    const rawName = row[fullNameCol] || row['fullName'] || row['Full Name'] || row['Name'] || '';
+
+    const studentId = normalizeStudentId(rawStudentId);
+    const email = normalizeEmail(rawEmail);
+
+    if (!studentId && !email) {
+      results.invalid++;
+      rowDocs.push({
+        importId: importRecord._id,
+        rowNumber: rowItem.rowNumber,
+        rawData: row,
+        normalizedData: { studentId, email, fullName: rawName },
+        validationStatus: 'INVALID',
+        errors: [{ field: 'studentId', message: 'Student ID or Email is missing' }],
+      });
+      continue;
+    }
+
+    // Within-file duplicate check
+    const dedupKey = studentId || email;
+    if (seenStudentIds.has(dedupKey)) {
+      results.duplicate++;
+      rowDocs.push({
+        importId: importRecord._id,
+        rowNumber: rowItem.rowNumber,
+        rawData: row,
+        normalizedData: { studentId, email, fullName: rawName },
+        validationStatus: 'DUPLICATE',
+        errors: [{ field: 'studentId', message: 'Duplicate record in this file' }],
+      });
+      continue;
+    }
+    seenStudentIds.add(dedupKey);
+
+    // Find member by student ID or email
+    const query = [];
+    if (studentId) query.push({ studentId });
+    if (email) query.push({ email });
+
+    const member = await Member.findOne({
+      $or: query,
+      status: 'ACTIVE',
+    }).lean();
+
+    if (!member) {
+      results.unknownMember++;
+      rowDocs.push({
+        importId: importRecord._id,
+        rowNumber: rowItem.rowNumber,
+        rawData: row,
+        normalizedData: { studentId, email, fullName: rawName },
+        validationStatus: 'UNKNOWN_MEMBER',
+        errors: [
+          {
+            field: 'studentId',
+            message: `No active member found with ID: ${studentId || email}`,
+          },
+        ],
+      });
+      continue;
+    }
+
+    // Check if attendance already recorded for this activity
+    if (existingMemberIds.has(member._id.toString())) {
+      results.alreadyImported++;
+      rowDocs.push({
+        importId: importRecord._id,
+        rowNumber: rowItem.rowNumber,
+        rawData: row,
+        normalizedData: { studentId, email, fullName: rawName },
+        resolvedMemberId: member._id,
+        validationStatus: 'ALREADY_IMPORTED',
+        errors: [{ field: 'studentId', message: 'Attendance already recorded for this activity' }],
+      });
+      continue;
+    }
+
+    // Valid
+    results.valid++;
+    rowDocs.push({
+      importId: importRecord._id,
+      rowNumber: rowItem.rowNumber,
+      rawData: row,
+      normalizedData: { studentId: member.studentId, email: member.email, fullName: member.fullName },
+      resolvedMemberId: member._id,
+      validationStatus: 'VALID',
+      errors: [],
+    });
+  }
+
+  // Bulk insert row records
+  if (rowDocs.length > 0) {
+    await AttendanceImportRow.insertMany(rowDocs);
+  }
+
+  // Update import record to VALIDATED status with stats
+  const finalStatus = results.valid > 0 ? 'VALIDATED' : rows.length === 0 ? 'UPLOADED' : 'VALIDATED';
+  await AttendanceImport.findByIdAndUpdate(importRecord._id, {
+    status: finalStatus,
+    validRows: results.valid,
+    duplicateRows: results.duplicate,
+    unknownMemberRows: results.unknownMember,
+    mismatchedEmailRows: results.emailMismatch,
+    invalidRows: results.invalid + results.alreadyImported,
+    validationSummary: results,
   });
 
   await createAuditLog({
@@ -124,16 +301,20 @@ export const uploadAttendanceFile = async (file, activityId, columnMapping, acto
     action: 'ATTENDANCE_IMPORT_UPLOADED',
     entityType: 'AttendanceImport',
     entityId: importRecord._id,
-    details: { activityId, filename: originalFilename, totalRows: rows.length },
+    details: { activityId, filename: originalFilename, totalRows: rows.length, validRows: results.valid },
     ipAddress,
   });
 
   return {
     importId: importRecord._id,
+    _id: importRecord._id,
+    id: importRecord._id,
     headers,
-    previewRows: rows.slice(0, 10).map((r) => r.data),
     totalRows: rows.length,
-    status: 'UPLOADED',
+    validRows: results.valid,
+    duplicateRows: results.duplicate,
+    unknownMemberRows: results.unknownMember,
+    status: finalStatus,
   };
 };
 
@@ -474,25 +655,32 @@ export const cancelImport = async (importId, actorUserId, { ipAddress = '' } = {
  * Get paginated list of imports
  */
 export const getImports = async ({ page = 1, limit = 20, activityId = null, status = null } = {}) => {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const filter = {};
   if (activityId) filter.activityId = activityId;
   if (status) filter.status = status;
 
-  const skip = (page - 1) * limit;
+  const skip = (p - 1) * l;
+  const countPromise = Object.keys(filter).length === 0
+    ? AttendanceImport.estimatedDocumentCount()
+    : AttendanceImport.countDocuments(filter);
+
   const [imports, total] = await Promise.all([
     AttendanceImport.find(filter)
+      .select('-validationSummary')
       .populate('activityId', 'title activityCode activityDate')
       .populate('uploadedBy', 'email')
       .sort({ createdAt: -1 })
       .skip(skip)
-      .limit(limit)
+      .limit(l)
       .lean(),
-    AttendanceImport.countDocuments(filter),
+    countPromise,
   ]);
 
   return {
     imports,
-    pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    pagination: { total, page: p, limit: l, totalPages: Math.ceil(total / l) },
   };
 };
 
@@ -527,26 +715,32 @@ export const getAttendance = async ({
   activityId = null,
   status = null,
 } = {}) => {
+  const p = Math.max(1, parseInt(page, 10) || 1);
+  const l = Math.max(1, Math.min(100, parseInt(limit, 10) || 20));
   const filter = {};
   if (memberId) filter.memberId = new mongoose.Types.ObjectId(memberId);
   if (activityId) filter.activityId = new mongoose.Types.ObjectId(activityId);
   if (status) filter.status = status;
 
-  const skip = (page - 1) * limit;
+  const skip = (p - 1) * l;
+  const countPromise = Object.keys(filter).length === 0
+    ? Attendance.estimatedDocumentCount()
+    : Attendance.countDocuments(filter);
+
   const [attendance, total] = await Promise.all([
     Attendance.find(filter)
       .populate('memberId', 'studentId fullName email department')
       .populate('activityId', 'title activityCode activityDate ccaHours')
       .sort({ recordedAt: -1 })
       .skip(skip)
-      .limit(limit)
+      .limit(l)
       .lean(),
-    Attendance.countDocuments(filter),
+    countPromise,
   ]);
 
   return {
     attendance,
-    pagination: { total, page, limit, totalPages: Math.ceil(total / limit) },
+    pagination: { total, page: p, limit: l, totalPages: Math.ceil(total / l) },
   };
 };
 
@@ -603,4 +797,117 @@ export const correctAttendance = async (attendanceId, correctionData, actorUserI
   });
 
   return attendance;
+};
+
+/**
+ * Manually record attendance for a member
+ */
+export const recordManualAttendance = async (
+  { memberId, activityId, status = 'PRESENT', hoursAwarded = null, recordedAt = null, notes = '' },
+  actorUserId,
+  { ipAddress = '' } = {}
+) => {
+  // Validate member
+  let member = null;
+  if (mongoose.isValidObjectId(memberId)) {
+    member = await Member.findById(memberId);
+  }
+  if (!member && typeof memberId === 'string') {
+    member = await Member.findOne({ studentId: memberId.trim().toUpperCase() });
+  }
+  if (!member) {
+    throw new AppError('Member not found', 404);
+  }
+
+  // Validate activity
+  const activity = await Activity.findById(activityId);
+  if (!activity) {
+    throw new AppError('Activity not found', 404);
+  }
+  if (activity.status === 'CANCELLED') {
+    throw new AppError('Cannot record attendance for a cancelled activity', 400);
+  }
+
+  // Determine hours awarded: custom hours or activity default
+  const finalHours =
+    hoursAwarded !== null && hoursAwarded !== undefined && !isNaN(Number(hoursAwarded))
+      ? Number(hoursAwarded)
+      : status === 'PRESENT'
+      ? activity.ccaHours || 0
+      : 0;
+
+  // Check if attendance already exists for this member & activity
+  const existing = await Attendance.findOne({
+    memberId: member._id,
+    activityId: activity._id,
+  });
+
+  let attendanceRecord;
+  if (existing) {
+    // Update existing attendance
+    existing.status = status;
+    existing.hoursAwarded = finalHours;
+    existing.recordedBy = actorUserId;
+    if (recordedAt) existing.recordedAt = new Date(recordedAt);
+    if (notes) existing.correctionReason = notes;
+    await existing.save();
+    attendanceRecord = existing;
+  } else {
+    // Create new attendance
+    attendanceRecord = await Attendance.create({
+      memberId: member._id,
+      activityId: activity._id,
+      status,
+      hoursAwarded: finalHours,
+      recordedBy: actorUserId,
+      recordedAt: recordedAt ? new Date(recordedAt) : new Date(),
+      correctionReason: notes || null,
+    });
+  }
+
+  await createAuditLog({
+    actorUserId,
+    action: existing ? 'ATTENDANCE_MANUALLY_UPDATED' : 'ATTENDANCE_MANUALLY_RECORDED',
+    entityType: 'Attendance',
+    entityId: attendanceRecord._id,
+    details: {
+      memberId: member._id,
+      studentId: member.studentId,
+      activityId: activity._id,
+      activityCode: activity.activityCode,
+      status,
+      hoursAwarded: finalHours,
+    },
+    ipAddress,
+  });
+
+  const populated = await Attendance.findById(attendanceRecord._id)
+    .populate('memberId', 'studentId fullName email department')
+    .populate('activityId', 'title activityCode activityDate ccaHours status')
+    .lean();
+
+  return populated;
+};
+
+/**
+ * Delete an attendance record
+ */
+export const deleteAttendance = async (attendanceId, actorUserId, { ipAddress = '' } = {}) => {
+  const existing = await Attendance.findById(attendanceId);
+  if (!existing) {
+    throw new AppError('Attendance record not found', 404);
+  }
+
+  await Attendance.findByIdAndDelete(attendanceId);
+
+  await createAuditLog({
+    actorUserId,
+    action: 'ATTENDANCE_RECORD_DELETED',
+    entityType: 'Attendance',
+    entityId: attendanceId,
+    details: { memberId: existing.memberId, activityId: existing.activityId },
+    ipAddress,
+  });
+
+  return { success: true };
 };

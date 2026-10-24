@@ -29,10 +29,8 @@ const ActivityNewPage = lazy(() => import('./pages/admin/ActivityNewPage.jsx'));
 const ActivityEditPage = lazy(() => import('./pages/admin/ActivityEditPage.jsx'));
 
 const AttendancePage = lazy(() => import('./pages/admin/AttendancePage.jsx'));
-
-// Attendance upload pages
-// const AttendanceUploadPage = lazy(() => import('./pages/admin/AttendanceUploadPage.jsx'));
-// const AttendanceImportDetailPage = lazy(() => import('./pages/admin/AttendanceImportDetailPage.jsx'));
+const AttendanceUploadPage = lazy(() => import('./pages/admin/AttendanceUploadPage.jsx'));
+const AttendanceImportDetailPage = lazy(() => import('./pages/admin/AttendanceImportDetailPage.jsx'));
 
 // Other admin pages
 // const AnalyticsPage = lazy(() => import('./pages/admin/AnalyticsPage.jsx'));
@@ -92,18 +90,16 @@ export default function App() {
               <Route path="/admin/activities/:id/edit" element={<ActivityEditPage />} />
 
               <Route path="/admin/attendance" element={<AttendancePage />} />
-
-              {/*
               <Route
                 path="/admin/attendance/upload"
                 element={<AttendanceUploadPage />}
               />
-
               <Route
                 path="/admin/attendance/imports/:id"
                 element={<AttendanceImportDetailPage />}
               />
 
+              {/*
               <Route path="/admin/analytics" element={<AnalyticsPage />} />
               <Route path="/admin/reports" element={<ReportsPage />} />
               <Route path="/admin/documents" element={<DocumentsPage />} />

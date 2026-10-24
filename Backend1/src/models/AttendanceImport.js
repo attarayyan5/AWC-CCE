@@ -89,6 +89,11 @@ const attendanceImportSchema = new mongoose.Schema(
   }
 );
 
+// Indexes for fast lookup and sorted pagination
+attendanceImportSchema.index({ createdAt: -1 });
+attendanceImportSchema.index({ status: 1, createdAt: -1 });
+attendanceImportSchema.index({ activityId: 1, createdAt: -1 });
+
 const AttendanceImport = mongoose.model('AttendanceImport', attendanceImportSchema);
 
 export default AttendanceImport;
